@@ -13,7 +13,7 @@ import sys, pandas as pd, numpy as np, mlflow, mlflow.prophet
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error
 
-ROOT      = Path(__file__).parent.parent
+ROOT      = Path(__file__).parent.parent.parent
 DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
 EXPERIMENT_NAME  = "ai-energy-forecast-tracker"
 REGISTERED_MODEL = "ai-energy-forecast-model"

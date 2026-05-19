@@ -17,7 +17,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from pathlib import Path
 from datetime import datetime
 
-ROOT      = Path(__file__).parent.parent
+ROOT      = Path(__file__).parent.parent.parent
 DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
 EXPERIMENT_NAME  = "ai-energy-forecast-tracker"
 REGISTERED_MODEL = "ai-energy-forecast-model"
@@ -29,7 +29,7 @@ def load_data() -> pd.DataFrame:
     if not DATA_PATH.exists():
         print("No data found — running fetch_data.py first...")
         import subprocess
-        subprocess.run([sys.executable, str(ROOT / "src" / "fetch_data.py")], check=True)
+        subprocess.run([sys.executable, str(ROOT / "src" / "ingest" / "eia.py")], check=True)
     df = pd.read_csv(DATA_PATH, parse_dates=["ds"])
     return df.sort_values("ds").reset_index(drop=True)
 

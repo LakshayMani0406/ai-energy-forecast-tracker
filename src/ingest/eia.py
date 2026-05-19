@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
-ROOT       = Path(__file__).parent.parent
+ROOT      = Path(__file__).parent.parent.parent
 DATA_PATH  = ROOT / "data" / "raw" / "energy_data.csv"
 SEED_PATH  = ROOT / "data" / "raw" / "seed_data.csv"
 

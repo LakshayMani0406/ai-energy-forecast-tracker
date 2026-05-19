@@ -11,7 +11,7 @@ import mlflow
 import mlflow.prophet
 from pathlib import Path
 
-ROOT      = Path(__file__).parent.parent
+ROOT      = Path(__file__).parent.parent.parent
 DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
 REGISTERED_MODEL = "ai-energy-forecast-model"
 

@@ -24,13 +24,13 @@ jobs:
       - name: Fetch latest data
         env:
           EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-        run: python src/fetch_data.py
+        run: python src/ingest/eia.py
 
       - name: Train model
-        run: python src/train.py
+        run: python src/forecast/train.py
 
       - name: Evaluate and promote
-        run: python src/evaluate.py
+        run: python src/forecast/evaluate.py
 
       - name: Commit updated MLflow runs and forecast
         run: |

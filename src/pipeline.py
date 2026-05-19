@@ -12,9 +12,9 @@ ROOT = Path(__file__).parent.parent
 PY   = sys.executable
 
 steps = [
-    ("📡 Fetching data",          [PY, str(ROOT / "src" / "fetch_data.py")]),
-    ("🔬 Training model",          [PY, str(ROOT / "src" / "train.py")]),
-    ("🏷️  Evaluating & promoting", [PY, str(ROOT / "src" / "evaluate.py")]),
+    ("📡 Fetching data",          [PY, str(ROOT / "src" / "ingest" / "eia.py")]),
+    ("🔬 Training model",          [PY, str(ROOT / "src" / "forecast" / "train.py")]),
+    ("🏷️  Evaluating & promoting", [PY, str(ROOT / "src" / "forecast" / "evaluate.py")]),
 ]
 
 for label, cmd in steps:
@@ -26,4 +26,4 @@ for label, cmd in steps:
 
 print("\n✅ Pipeline complete.")
 print("   View MLflow UI:  mlflow ui --backend-store-uri mlruns/")
-print("   View dashboard:  streamlit run src/dashboard.py")
+print("   View dashboard:  streamlit run src/dashboard/app.py")
