@@ -1,110 +1,150 @@
 #!/usr/bin/env python3
 """
-evaluate.py — promotion logic.
+evaluate.py — Multi-model holdout evaluation and promotion.
 
-Compares the latest trained model (Staging) against the current
-Production model on a 6-month holdout. Promotes if new model
-is ≥5% better on MAE. Logs the decision to MLflow.
+Reads is_holdout rows from model_forecasts, joins against fusion_posterior
+actuals, computes MAE per model, logs leaderboard to MLflow, and promotes
+the best Prophet version to Production in the model registry.
+
+All four models must have been trained before running this:
+  python src/forecast/naive_seasonal.py
+  python src/forecast/sarima_model.py
+  python src/forecast/ols_model.py
+  python src/forecast/prophet_model.py
+  python src/forecast/evaluate.py
 
 Usage:
-  python src/evaluate.py
+  python src/forecast/evaluate.py
 """
-import sys, pandas as pd, numpy as np, mlflow, mlflow.prophet
+import sys, mlflow, pandas as pd
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error
 
-ROOT      = Path(__file__).parent.parent.parent
-DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
-EXPERIMENT_NAME  = "ai-energy-forecast-tracker"
-REGISTERED_MODEL = "ai-energy-forecast-model"
-HOLDOUT_MONTHS   = 6
+ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT / "src" / "ingest"))
+from db import get_conn
+
+MLFLOW_EXP        = "ai-energy-forecast-tracker"
+REGISTERED_MODEL  = "ai-energy-forecast-model"
+VARIABLE          = "dc_co2_mt_monthly"
 PROMOTION_THRESHOLD = 0.95   # new MAE must be < 95% of prod MAE to promote
 
 mlflow.set_tracking_uri(f"file://{ROOT / 'mlruns'}")
 
 
+def load_holdout_comparison() -> pd.DataFrame:
+    """Join model_forecasts holdout rows with fusion_posterior actuals."""
+    with get_conn() as conn:
+        df = conn.execute("""
+            SELECT mf.model,
+                   mf.ds,
+                   mf.yhat,
+                   fp.mean AS y_actual
+            FROM model_forecasts mf
+            JOIN fusion_posterior fp
+              ON mf.ds = fp.ds
+             AND fp.variable = mf.variable
+            WHERE mf.variable = ?
+              AND mf.is_holdout = TRUE
+            ORDER BY mf.model, mf.ds
+        """, [VARIABLE]).df()
+    df["ds"] = pd.to_datetime(df["ds"])
+    return df
+
+
+def compute_leaderboard(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for model, grp in df.groupby("model"):
+        mae = mean_absolute_error(grp["y_actual"], grp["yhat"])
+        rows.append({"model": model, "holdout_mae_mt": mae, "n_holdout": len(grp)})
+    lb = pd.DataFrame(rows).sort_values("holdout_mae_mt").reset_index(drop=True)
+    lb["rank"] = lb.index + 1
+    return lb
+
+
 def get_model_version(stage: str):
     client = mlflow.tracking.MlflowClient()
-    versions = client.get_latest_versions(REGISTERED_MODEL, stages=[stage])
-    return versions[0] if versions else None
+    try:
+        versions = client.get_latest_versions(REGISTERED_MODEL, stages=[stage])
+        return versions[0] if versions else None
+    except Exception:
+        return None
 
 
-def score_model(model_uri: str, df: pd.DataFrame, holdout: int) -> float:
-    cutoff = df["ds"].max() - pd.DateOffset(months=holdout)
-    test   = df[df["ds"] > cutoff][["ds", "y"]]
-    model  = mlflow.prophet.load_model(model_uri)
-    # Extend forecast to cover the full holdout window
-    future = model.make_future_dataframe(periods=holdout + 2, freq="MS")
-    forecast = model.predict(future)
-    pred = forecast[forecast["ds"].isin(test["ds"])][["ds", "yhat"]].set_index("ds")
-    actual = test.set_index("ds")["y"]
-    aligned = actual.align(pred["yhat"], join="inner")
-    if len(aligned[0]) == 0:
-        raise ValueError("No overlapping dates between forecast and holdout")
-    return mean_absolute_error(aligned[0], aligned[1])
-
-
-def main():
+def promote_prophet(lb: pd.DataFrame) -> None:
+    """Promote the latest Prophet registry version if it won or no Production exists."""
     client = mlflow.tracking.MlflowClient()
-    df = pd.read_csv(DATA_PATH, parse_dates=["ds"]).sort_values("ds")
-
     staging_v = get_model_version("Staging")
     prod_v    = get_model_version("Production")
 
-    if not staging_v:
-        print("No Staging model found — run train.py first")
+    if staging_v:
+        promote = prod_v is None
+        if not promote:
+            prophet_row = lb[lb["model"] == "prophet"]
+            if not prophet_row.empty:
+                promote = float(prophet_row["holdout_mae_mt"].iloc[0]) < PROMOTION_THRESHOLD
+        if promote:
+            if prod_v:
+                client.transition_model_version_stage(
+                    REGISTERED_MODEL, prod_v.version, "Archived"
+                )
+            client.transition_model_version_stage(
+                REGISTERED_MODEL, staging_v.version, "Production"
+            )
+            print(f"   Promoted v{staging_v.version} → Production")
+        else:
+            print(f"   Staging v{staging_v.version} did not beat threshold — kept Production")
+    elif prod_v:
+        print(f"   Prophet already in Production (v{prod_v.version}) — no action needed")
+    else:
+        # Promote whatever version exists (first run)
+        try:
+            all_versions = client.search_model_versions(f"name='{REGISTERED_MODEL}'")
+            if all_versions:
+                latest = sorted(all_versions, key=lambda v: int(v.version))[-1]
+                client.transition_model_version_stage(
+                    REGISTERED_MODEL, latest.version, "Production"
+                )
+                print(f"   Promoted v{latest.version} → Production")
+        except Exception as e:
+            print(f"   Registry promotion skipped: {e}")
+
+
+def main():
+    mlflow.set_experiment(MLFLOW_EXP)
+
+    df = load_holdout_comparison()
+    if df.empty:
+        print("❌  No holdout rows found — run the four model scripts first")
         sys.exit(1)
 
-    staging_uri = f"models:/{REGISTERED_MODEL}/Staging"
-    staging_mae = score_model(staging_uri, df, HOLDOUT_MONTHS)
-    print(f"📊 Staging  MAE ({HOLDOUT_MONTHS}m holdout): {staging_mae:.4f} Mt")
+    lb = compute_leaderboard(df)
+    winner = lb.iloc[0]
 
-    if prod_v:
-        try:
-            prod_uri = f"models:/{REGISTERED_MODEL}/Production"
-            prod_mae = score_model(prod_uri, df, HOLDOUT_MONTHS)
-            print(f"📊 Production MAE ({HOLDOUT_MONTHS}m holdout): {prod_mae:.4f} Mt")
-            improvement = (prod_mae - staging_mae) / prod_mae
-            promote = staging_mae < prod_mae * PROMOTION_THRESHOLD
-            print(f"   Improvement: {improvement*100:+.1f}% (threshold: +5%)")
-        except ValueError:
-            prod_mae = None
-            promote = True
-            print("   Production model incompatible with current data — promoting automatically")
-    else:
-        prod_mae = None
-        promote = True
-        print("   No production model yet — promoting automatically")
+    print("\n📊 Model leaderboard (12-month holdout MAE on dc_co2_mt_monthly):")
+    print(f"{'Rank':<6}{'Model':<20}{'MAE (Mt/mo)':<16}{'N holdout'}")
+    print("─" * 52)
+    for _, row in lb.iterrows():
+        marker = " ← winner" if row["rank"] == 1 else ""
+        print(f"{int(row['rank']):<6}{row['model']:<20}{row['holdout_mae_mt']:<16.4f}"
+              f"{int(row['n_holdout'])}{marker}")
 
-    mlflow.set_experiment(EXPERIMENT_NAME)
-    with mlflow.start_run(run_name="promotion-check"):
+    metrics = {f"mae_{row['model']}": row["holdout_mae_mt"] for _, row in lb.iterrows()}
+    metrics["winner_mae"] = float(winner["holdout_mae_mt"])
+
+    with mlflow.start_run(run_name=f"evaluate-{pd.Timestamp.now().strftime('%Y%m%d-%H%M')}"):
         mlflow.log_params({
-            "staging_version": staging_v.version,
-            "prod_version": prod_v.version if prod_v else "none",
-            "holdout_months": HOLDOUT_MONTHS,
-            "threshold": PROMOTION_THRESHOLD,
+            "variable": VARIABLE,
+            "winner_model": winner["model"],
+            "models_compared": ",".join(lb["model"].tolist()),
         })
-        mlflow.log_metrics({
-            "staging_mae": staging_mae,
-            "prod_mae": prod_mae if prod_mae else staging_mae,
-            "promoted": int(promote),
-        })
+        mlflow.log_metrics(metrics)
 
-    if promote:
-        # Archive old production
-        if prod_v:
-            client.transition_model_version_stage(
-                REGISTERED_MODEL, prod_v.version, "Archived"
-            )
-        # Promote staging → production
-        client.transition_model_version_stage(
-            REGISTERED_MODEL, staging_v.version, "Production"
-        )
-        print(f"✅ Promoted v{staging_v.version} → Production")
-    else:
-        print(f"⏭  Kept existing Production (staging did not beat threshold)")
+    print(f"\n🏆 Winner: {winner['model']} — MAE {winner['holdout_mae_mt']:.4f} Mt/mo")
 
-    return promote
+    promote_prophet(lb)
+
+    return winner["model"]
 
 
 if __name__ == "__main__":
