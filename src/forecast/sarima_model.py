@@ -8,7 +8,8 @@ forecasts through 2030, logs to MLflow, writes to model_forecasts table.
 Usage:
   python src/forecast/sarima_model.py
 """
-import sys, warnings, mlflow, numpy as np, pandas as pd
+import sys, warnings, mlflow, mlflow.pyfunc, pickle, tempfile, os
+import numpy as np, pandas as pd
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error
 from datetime import datetime, timezone
@@ -116,6 +117,47 @@ def write_forecasts(fc_mean: pd.Series, fc_ci: pd.DataFrame,
         """)
 
 
+REGISTERED_MODEL = "ai-energy-forecast-model"
+
+
+class SARIMAForecastModel(mlflow.pyfunc.PythonModel):
+    """
+    pyfunc wrapper for a fitted SARIMAXResultsWrapper.
+
+    Input DataFrame schema: one column 'periods' (int) — steps to forecast.
+    Output DataFrame: yhat, yhat_lower, yhat_upper (one row per step).
+    """
+
+    def load_context(self, context):
+        with open(context.artifacts["sarima_pkl"], "rb") as f:
+            self.results = pickle.load(f)
+
+    def predict(self, context, model_input):
+        periods = int(model_input["periods"].iloc[0])
+        fc = self.results.get_forecast(steps=periods)
+        ci = fc.conf_int()
+        return pd.DataFrame({
+            "yhat":       fc.predicted_mean.values,
+            "yhat_lower": ci.iloc[:, 0].values,
+            "yhat_upper": ci.iloc[:, 1].values,
+        })
+
+
+def register_sarima(fitted_model) -> str:
+    """Pickle fitted SARIMAX results → pyfunc → MLflow registry (logs to active run). Returns version."""
+    with tempfile.TemporaryDirectory() as tmp:
+        pkl_path = os.path.join(tmp, "sarima.pkl")
+        with open(pkl_path, "wb") as f:
+            pickle.dump(fitted_model, f)
+        model_info = mlflow.pyfunc.log_model(
+            artifact_path="sarima_pyfunc",
+            python_model=SARIMAForecastModel(),
+            artifacts={"sarima_pkl": pkl_path},
+            registered_model_name=REGISTERED_MODEL,
+        )
+    return model_info.registered_model_version
+
+
 def main():
     mlflow.set_experiment(MLFLOW_EXP)
     ts = datetime.now(timezone.utc).isoformat()
@@ -144,6 +186,10 @@ def main():
         if not fc_2030.empty:
             annual_2030 = fc_2030.sum()
             print(f"   2030 CO2 projection: {annual_2030:.1f} Mt/yr")
+
+        # Register pyfunc model in MLflow registry (logs to this active run)
+        version = register_sarima(model)
+        print(f"   Registered pyfunc v{version} → {REGISTERED_MODEL}")
 
         print(f"✅ SARIMA — holdout MAE: {mae:.4f} Mt | run: {run.info.run_id}")
         return mae

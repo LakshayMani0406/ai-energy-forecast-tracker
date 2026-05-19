@@ -71,43 +71,56 @@ def get_model_version(stage: str):
         return None
 
 
-def promote_prophet(lb: pd.DataFrame) -> None:
-    """Promote the latest Prophet registry version if it won or no Production exists."""
+def promote_winner(winner_model: str, winner_mae: float) -> None:
+    """
+    Promote the latest registered version of the winning model to Production.
+    Searches all versions, finds the most recent one whose run logged winner_model
+    as a param, and transitions it. Falls back to latest version if param search fails.
+    """
     client = mlflow.tracking.MlflowClient()
-    staging_v = get_model_version("Staging")
-    prod_v    = get_model_version("Production")
+    prod_v = get_model_version("Production")
 
-    if staging_v:
-        promote = prod_v is None
-        if not promote:
-            prophet_row = lb[lb["model"] == "prophet"]
-            if not prophet_row.empty:
-                promote = float(prophet_row["holdout_mae_mt"].iloc[0]) < PROMOTION_THRESHOLD
-        if promote:
-            if prod_v:
-                client.transition_model_version_stage(
-                    REGISTERED_MODEL, prod_v.version, "Archived"
-                )
-            client.transition_model_version_stage(
-                REGISTERED_MODEL, staging_v.version, "Production"
-            )
-            print(f"   Promoted v{staging_v.version} → Production")
-        else:
-            print(f"   Staging v{staging_v.version} did not beat threshold — kept Production")
-    elif prod_v:
-        print(f"   Prophet already in Production (v{prod_v.version}) — no action needed")
-    else:
-        # Promote whatever version exists (first run)
+    # Fetch all registered versions ordered by creation time desc
+    try:
+        all_versions = client.search_model_versions(f"name='{REGISTERED_MODEL}'")
+    except Exception as e:
+        print(f"   Registry lookup failed: {e}")
+        return
+
+    if not all_versions:
+        print("   No registered model versions found — run the model scripts first")
+        return
+
+    # Try to find a version matching the winner model by params
+    winner_version = None
+    for v in sorted(all_versions, key=lambda v: int(v.version), reverse=True):
         try:
-            all_versions = client.search_model_versions(f"name='{REGISTERED_MODEL}'")
-            if all_versions:
-                latest = sorted(all_versions, key=lambda v: int(v.version))[-1]
-                client.transition_model_version_stage(
-                    REGISTERED_MODEL, latest.version, "Production"
-                )
-                print(f"   Promoted v{latest.version} → Production")
-        except Exception as e:
-            print(f"   Registry promotion skipped: {e}")
+            run = client.get_run(v.run_id)
+            run_model = run.data.params.get("model", "")
+            if run_model == winner_model:
+                winner_version = v
+                break
+        except Exception:
+            continue
+
+    # Fall back to the most-recent version
+    if winner_version is None:
+        winner_version = sorted(all_versions, key=lambda v: int(v.version))[-1]
+        print(f"   Could not match winner by params — using latest v{winner_version.version}")
+
+    if prod_v and prod_v.version == winner_version.version:
+        print(f"   v{prod_v.version} already in Production — no change")
+        return
+
+    if prod_v:
+        client.transition_model_version_stage(
+            REGISTERED_MODEL, prod_v.version, "Archived"
+        )
+    client.transition_model_version_stage(
+        REGISTERED_MODEL, winner_version.version, "Production"
+    )
+    print(f"   Promoted {winner_model} v{winner_version.version} → Production"
+          f" (MAE {winner_mae:.4f} Mt/mo)")
 
 
 def main():
@@ -142,7 +155,7 @@ def main():
 
     print(f"\n🏆 Winner: {winner['model']} — MAE {winner['holdout_mae_mt']:.4f} Mt/mo")
 
-    promote_prophet(lb)
+    promote_winner(winner["model"], float(winner["holdout_mae_mt"]))
 
     return winner["model"]
 
