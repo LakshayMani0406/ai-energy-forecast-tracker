@@ -4,6 +4,7 @@ data/raw/*.csv
 data/raw/egrid/
 data/raw/ferc_queues/
 data/warehouse.duckdb
+data/exports/
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
