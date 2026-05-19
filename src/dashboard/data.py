@@ -154,13 +154,74 @@ def load_state_2030() -> pd.DataFrame:
 
 # ── Futures Engine loaders ────────────────────────────────────────────────────
 
+_CACHE_DIR = ROOT / "data" / "simulation_outputs" / "cache"
+
+
 @st.cache_data(ttl=600)
 def load_simulation_summary() -> pd.DataFrame | None:
+    """
+    Load all scenario summaries from real simulation cache dirs.
+    Falls back to legacy data/simulations/summary.parquet if cache is empty.
+
+    Columns: scenario, year, variable, p5, p25, p50, p75, p95, mean, std,
+             variance, cvar_95, prob_exceed_iea, prob_exceed_2x_anchor,
+             prob_exceed_4x_anchor, n_trajectories
+    """
+    import json
+
+    if _CACHE_DIR.exists():
+        frames = []
+        for run_dir in sorted(_CACHE_DIR.iterdir()):
+            manifest_p = run_dir / "simulation_manifest.json"
+            summary_p = run_dir / "summary_metrics.parquet"
+            if not manifest_p.exists() or not summary_p.exists():
+                continue
+            scenario_name = json.loads(manifest_p.read_text())["scenario"]
+            df = pd.read_parquet(summary_p)
+            df["scenario"] = scenario_name
+            frames.append(df)
+        if frames:
+            return pd.concat(frames, ignore_index=True)
+
+    # Legacy fallback
     try:
         from simulation_engine.trajectories import load_summary
         return load_summary()
     except FileNotFoundError:
         return None
+
+
+@st.cache_data(ttl=600)
+def load_run_manifest(scenario: str) -> dict | None:
+    """Return simulation_manifest.json for the most recent run of a scenario."""
+    import json
+
+    if not _CACHE_DIR.exists():
+        return None
+    for run_dir in sorted(_CACHE_DIR.iterdir()):
+        manifest_p = run_dir / "simulation_manifest.json"
+        if not manifest_p.exists():
+            continue
+        m = json.loads(manifest_p.read_text())
+        if m.get("scenario") == scenario:
+            return m
+    return None
+
+
+@st.cache_data(ttl=600)
+def load_scenario_report(scenario: str) -> str | None:
+    """Return the auto-generated scenario_report.md for a given scenario."""
+    if not _CACHE_DIR.exists():
+        return None
+    for run_dir in sorted(_CACHE_DIR.iterdir()):
+        manifest_p = run_dir / "simulation_manifest.json"
+        report_p = run_dir / "scenario_report.md"
+        if not manifest_p.exists() or not report_p.exists():
+            continue
+        import json
+        if json.loads(manifest_p.read_text()).get("scenario") == scenario:
+            return report_p.read_text()
+    return None
 
 
 @st.cache_data(ttl=300)

@@ -7,3 +7,11 @@ data/exports/
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
+
+# Large simulation run artifacts — never commit full trajectories
+data/simulation_outputs/
+!data/simulation_outputs/.gitkeep
+
+# Keep lightweight summary parquet (dashboard uses this)
+!data/simulations/
+

@@ -29,6 +29,7 @@ from data import (
     load_benchmark_scores,
     load_state_2024, load_state_2030,
     load_simulation_summary,
+    load_run_manifest, load_scenario_report,
     load_co2_annual_history, load_energy_annual_history,
     load_forecast_memory, load_org_credibility,
     load_decay_curve, load_assumption_autopsy,
@@ -405,12 +406,10 @@ with tabs[4]:
 
     if summary is None:
         st.warning(
-            "Simulation data not found. Run: `python src/simulation_engine/run.py`"
+            "Simulation data not found. Run: `python run_pipeline.py --all`"
         )
     else:
         # ── Scenario selector ─────────────────────────────────────────────
-        scenario_options = {s.name: s for s in SCENARIOS}
-        sc_cols = st.columns(4)
         selected = st.radio(
             "Scenario",
             options=[s.name for s in SCENARIOS],
@@ -424,6 +423,17 @@ with tabs[4]:
             unsafe_allow_html=True,
         )
 
+        # ── Run metadata strip ────────────────────────────────────────────
+        manifest = load_run_manifest(selected)
+        if manifest:
+            _ts = manifest.get("timestamp", "")[:19].replace("T", " ")
+            _meta_cols = st.columns(5)
+            _meta_cols[0].metric("Trajectories", f"{manifest.get('n_sims', 0):,}")
+            _meta_cols[1].metric("Years", f"2025–{manifest.get('years', [0])[-1]}")
+            _meta_cols[2].metric("Seed", manifest.get("seed", "—"))
+            _meta_cols[3].metric("Runtime", f"{manifest.get('runtime_seconds', 0):.2f}s")
+            _meta_cols[4].metric("Run timestamp", _ts + " UTC")
+
         # ── Variable toggle ───────────────────────────────────────────────
         var_choice = st.radio("Variable", ["CO₂ (Mt/yr)", "Energy (TWh/yr)"], horizontal=True)
         sim_var  = "dc_co2_mt"   if "CO₂" in var_choice else "dc_twh"
@@ -436,14 +446,12 @@ with tabs[4]:
         # ── Fan chart ─────────────────────────────────────────────────────
         fig_fan = go.Figure()
 
-        # Historical actuals
         fig_fan.add_trace(go.Scatter(
             x=hist_df["year"], y=hist_df[hist_col],
             line=dict(color="#22c55e", width=2.5),
             name="Historical (fusion posterior)",
         ))
 
-        # P5–P95 outer band
         fig_fan.add_trace(go.Scatter(
             x=pd.concat([sc_sum["year"], sc_sum["year"][::-1]]),
             y=pd.concat([sc_sum["p95"], sc_sum["p5"][::-1]]),
@@ -451,10 +459,8 @@ with tabs[4]:
             fillcolor=f"rgba({_hex_to_rgb(sc.color)},0.08)",
             line=dict(color="rgba(0,0,0,0)"),
             name="5th–95th pct",
-            showlegend=True,
         ))
 
-        # P25–P75 inner band
         fig_fan.add_trace(go.Scatter(
             x=pd.concat([sc_sum["year"], sc_sum["year"][::-1]]),
             y=pd.concat([sc_sum["p75"], sc_sum["p25"][::-1]]),
@@ -462,17 +468,14 @@ with tabs[4]:
             fillcolor=f"rgba({_hex_to_rgb(sc.color)},0.20)",
             line=dict(color="rgba(0,0,0,0)"),
             name="25th–75th pct",
-            showlegend=True,
         ))
 
-        # Median
         fig_fan.add_trace(go.Scatter(
             x=sc_sum["year"], y=sc_sum["p50"],
             line=dict(color=sc.color, width=2.5),
             name="Median",
         ))
 
-        # IEA 2024 reference line (CO₂ only)
         if "CO₂" in var_choice:
             fig_fan.add_hline(y=105, line_dash="dot", line_color="#ef4444",
                               annotation_text="IEA 2024 (105 Mt/yr)",
@@ -491,6 +494,21 @@ with tabs[4]:
         )
         st.plotly_chart(fig_fan, use_container_width=True)
 
+        # ── Tail risk cards (CO₂ only) ────────────────────────────────────
+        if "CO₂" in var_choice and not sc_sum.empty:
+            _row2030 = sc_sum[sc_sum["year"] == 2030]
+            if not _row2030.empty and "cvar_95" in _row2030.columns:
+                r = _row2030.iloc[0]
+                st.markdown("**2030 Tail Risk — from 10,000 real trajectories**")
+                _rc = st.columns(4)
+                _rc[0].metric("Median CO₂", f"{r['p50']:.1f} Mt/yr")
+                _rc[1].metric("CVaR(95%)", f"{r['cvar_95']:.1f} Mt/yr",
+                              help="Expected CO₂ across worst 5% of simulations")
+                _p_iea = r.get("prob_exceed_iea", float("nan"))
+                _p_2x  = r.get("prob_exceed_2x_anchor", float("nan"))
+                _rc[2].metric("P(> IEA 105 Mt)", f"{_p_iea:.1%}" if _p_iea == _p_iea else "—")
+                _rc[3].metric("P(> 2× 2024)", f"{_p_2x:.1%}" if _p_2x == _p_2x else "—")
+
         # ── Scenario comparison ───────────────────────────────────────────
         st.subheader("Scenario Comparison — 2030 & 2040 Median Outcomes")
 
@@ -508,14 +526,21 @@ with tabs[4]:
             ]
             if s2030.empty or s2040.empty:
                 continue
-            rows_cmp.append({
+            _r30 = s2030.iloc[0]
+            _r40 = s2040.iloc[0]
+            row = {
                 "Scenario": sc_obj.label,
-                "2030 median": round(float(s2030["p50"].values[0]), 1),
-                "2030 p5–p95": f"{s2030['p5'].values[0]:.0f} – {s2030['p95'].values[0]:.0f}",
-                "2040 median": round(float(s2040["p50"].values[0]), 1),
-                "2040 p5–p95": f"{s2040['p5'].values[0]:.0f} – {s2040['p95'].values[0]:.0f}",
+                "2030 median": round(float(_r30["p50"]), 1),
+                "2030 range": f"{_r30['p5']:.0f} – {_r30['p95']:.0f}",
+                "2040 median": round(float(_r40["p50"]), 1),
+                "2040 range": f"{_r40['p5']:.0f} – {_r40['p95']:.0f}",
                 "_color": sc_obj.color,
-            })
+            }
+            if "cvar_95" in _r30 and "CO₂" in var_choice:
+                row["CVaR(95%) 2030"] = round(float(_r30["cvar_95"]), 1)
+                _piea = _r30.get("prob_exceed_iea", float("nan"))
+                row["P(>IEA)"] = f"{_piea:.1%}" if _piea == _piea else "—"
+            rows_cmp.append(row)
 
         cmp_df = pd.DataFrame(rows_cmp)
         unit_label = "Mt CO₂/yr" if "CO₂" in var_choice else "TWh/yr"
@@ -534,13 +559,20 @@ with tabs[4]:
         )
         st.plotly_chart(fig_cmp, use_container_width=True)
 
-        display_cmp = cmp_df[["Scenario", "2030 median", "2030 p5–p95", "2040 median", "2040 p5–p95"]].copy()
-        display_cmp.columns = [
-            "Scenario",
-            f"2030 median ({unit_label})", "2030 range",
-            f"2040 median ({unit_label})", "2040 range",
-        ]
+        _base_cols = ["Scenario", "2030 median", "2030 range", "2040 median", "2040 range"]
+        _extra_cols = [c for c in ["CVaR(95%) 2030", "P(>IEA)"] if c in cmp_df.columns]
+        display_cmp = cmp_df[_base_cols + _extra_cols].copy()
+        display_cmp.rename(columns={
+            "2030 median": f"2030 median ({unit_label})",
+            "2040 median": f"2040 median ({unit_label})",
+        }, inplace=True)
         st.dataframe(display_cmp, use_container_width=True, hide_index=True)
+
+        # ── Scenario report expander ──────────────────────────────────────
+        report_md = load_scenario_report(selected)
+        if report_md:
+            with st.expander(f"Full simulation report — {sc.label}", expanded=False):
+                st.markdown(report_md)
 
         # ── Agent signals ─────────────────────────────────────────────────
         st.subheader("Agent Signals")
