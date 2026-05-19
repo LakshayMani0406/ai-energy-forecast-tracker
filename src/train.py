@@ -19,8 +19,8 @@ from datetime import datetime
 
 ROOT      = Path(__file__).parent.parent
 DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
-EXPERIMENT_NAME  = "datacenter-co2-forecasting"
-REGISTERED_MODEL = "datacenter-co2-model"
+EXPERIMENT_NAME  = "ai-energy-forecast-tracker"
+REGISTERED_MODEL = "ai-energy-forecast-model"
 
 mlflow.set_tracking_uri(f"file://{ROOT / 'mlruns'}")
 

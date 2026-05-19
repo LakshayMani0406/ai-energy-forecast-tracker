@@ -15,8 +15,8 @@ from sklearn.metrics import mean_absolute_error
 
 ROOT      = Path(__file__).parent.parent
 DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
-EXPERIMENT_NAME  = "datacenter-co2-forecasting"
-REGISTERED_MODEL = "datacenter-co2-model"
+EXPERIMENT_NAME  = "ai-energy-forecast-tracker"
+REGISTERED_MODEL = "ai-energy-forecast-model"
 HOLDOUT_MONTHS   = 6
 PROMOTION_THRESHOLD = 0.95   # new MAE must be < 95% of prod MAE to promote
 

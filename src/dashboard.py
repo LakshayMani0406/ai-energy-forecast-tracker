@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT      = Path(__file__).parent.parent
 DATA_PATH = ROOT / "data" / "raw" / "energy_data.csv"
-REGISTERED_MODEL = "datacenter-co2-model"
+REGISTERED_MODEL = "ai-energy-forecast-model"
 
 mlflow.set_tracking_uri(f"file://{ROOT / 'mlruns'}")
 
@@ -36,7 +36,7 @@ def load_actuals():
 def load_mlflow_runs():
     client = mlflow.tracking.MlflowClient()
     try:
-        exp = client.get_experiment_by_name("datacenter-co2-forecasting")
+        exp = client.get_experiment_by_name("ai-energy-forecast-tracker")
         if not exp:
             return pd.DataFrame()
         runs = client.search_runs(
