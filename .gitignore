@@ -1,6 +1,9 @@
 .env
 mlruns/
 data/raw/*.csv
+data/raw/egrid/
+data/raw/ferc_queues/
+data/warehouse.duckdb
 __pycache__/
 *.pyc
 .streamlit/secrets.toml

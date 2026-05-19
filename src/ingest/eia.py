@@ -9,8 +9,9 @@ Without a key, falls back to the bundled seed dataset.
 """
 import os, json, requests, pandas as pd, numpy as np
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
+from db import get_conn
 
 ROOT      = Path(__file__).parent.parent.parent
 DATA_PATH  = ROOT / "data" / "raw" / "energy_data.csv"
@@ -111,6 +112,33 @@ def compute_co2(df: pd.DataFrame) -> pd.DataFrame:
     return df[["ds", "y", "datacenter_twh", "commercial_gwh"]]
 
 
+def write_to_duckdb(df: pd.DataFrame) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    df = df.copy()
+    df["fetch_timestamp"] = ts
+    df["ds"] = pd.to_datetime(df["ds"])
+
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS eia_commercial_monthly (
+                ds              DATE PRIMARY KEY,
+                y               DOUBLE,
+                datacenter_twh  DOUBLE,
+                commercial_gwh  DOUBLE,
+                fetch_timestamp TIMESTAMP
+            )
+        """)
+        conn.register("incoming", df)
+        conn.execute("DELETE FROM eia_commercial_monthly WHERE ds IN (SELECT ds::DATE FROM incoming)")
+        conn.execute("""
+            INSERT INTO eia_commercial_monthly
+            SELECT ds::DATE, y, datacenter_twh, commercial_gwh, fetch_timestamp::TIMESTAMP
+            FROM incoming
+        """)
+        n = conn.execute("SELECT COUNT(*) FROM eia_commercial_monthly").fetchone()[0]
+    print(f"   ✅ eia_commercial_monthly: {n} total rows in warehouse")
+
+
 def main():
     load_dotenv(ROOT / ".env")
     api_key = os.getenv("EIA_API_KEY")
@@ -134,6 +162,7 @@ def main():
     print(f"✅ Saved {len(df)} rows → {DATA_PATH}")
     print(f"   Date range: {df['ds'].min().date()} → {df['ds'].max().date()}")
     print(f"   CO2 range:  {df['y'].min():.2f} – {df['y'].max():.2f} Mt/month")
+    write_to_duckdb(df)
     return df
 
 
