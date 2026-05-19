@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libffi-dev && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt uvicorn[standard]
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt uvicorn[standard]
 
 COPY src/ ./src/
 COPY data/ ./data/
