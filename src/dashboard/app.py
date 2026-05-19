@@ -344,8 +344,8 @@ with tab3:
         graded["Bias"] = graded["bias"].fillna("—")
 
         def _grade_style(row):
-            bg = GRADE_COLORS.get(row["grade"], "#ffffff")
-            return [f"background-color: {bg}22" if col == "grade" else "" for col in row.index]
+            bg = GRADE_COLORS.get(row["Grade"], "#ffffff")
+            return [f"background-color: {bg}22" if col == "Grade" else "" for col in row.index]
 
         disp = graded[["source", "report_year", "forecast_year", "Variable",
                         "Forecast", "Actual", "Error%", "grade", "Bias"]].copy()
