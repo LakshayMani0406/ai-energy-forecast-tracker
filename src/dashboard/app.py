@@ -1,11 +1,15 @@
 """
-app.py — US AI Datacenter Energy Reference Dashboard.
-
-Four-tab Streamlit app reading entirely from DuckDB.
-
-Run with:
-  streamlit run src/dashboard/app.py
+AI Infrastructure Digital Twin — Dashboard
+Six tabs:
+  1. National Forecast     — historical + SARIMA/Prophet/OLS/naive to 2030
+  2. Model Leaderboard     — holdout evaluation
+  3. Institutional Benchmarks
+  4. State Breakdown
+  5. Futures Engine        — Monte Carlo scenario fan charts
+  6. Forecast Graveyard    — decay analysis + org credibility
 """
+from __future__ import annotations
+
 import sys
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src" / "dashboard"))
 sys.path.insert(0, str(ROOT / "src" / "ingest"))
+sys.path.insert(0, str(ROOT / "src"))
 
 from data import (
     MODEL_COLORS, MODEL_LABELS, GRADE_COLORS,
@@ -23,102 +28,109 @@ from data import (
     load_leaderboard, load_2030_projections,
     load_benchmark_scores,
     load_state_2024, load_state_2030,
+    load_simulation_summary,
+    load_co2_annual_history, load_energy_annual_history,
+    load_forecast_memory, load_org_credibility,
+    load_decay_curve, load_assumption_autopsy,
+    load_gpu_demand_agent, load_emissions_agent,
 )
 
+from simulation_engine.scenarios import SCENARIOS, SCENARIO_MAP
+
+
+def _hex_to_rgb(h: str) -> str:
+    h = h.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"{r},{g},{b}"
+
+
 st.set_page_config(
-    page_title="US AI Datacenter Energy",
+    page_title="AI Infrastructure Digital Twin",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-st.title("⚡ US AI Datacenter Energy Reference Model")
+# ── Custom CSS — Bloomberg dark ───────────────────────────────────────────────
+st.markdown("""
+<style>
+  .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
+  h1 { letter-spacing: -0.5px; font-size: 1.7rem !important; }
+  h2 { font-size: 1.1rem !important; color: #94a3b8; letter-spacing: 0.5px; text-transform: uppercase; }
+  h3 { font-size: 1.0rem !important; }
+  .stMetric label { font-size: 0.68rem !important; color: #64748b !important; letter-spacing: 1px; text-transform: uppercase; }
+  .stMetric [data-testid="stMetricValue"] { font-size: 1.6rem !important; color: #e6edf3 !important; }
+  .stTabs [data-baseweb="tab-list"] { gap: 2px; }
+  .stTabs [data-baseweb="tab"] { font-size: 0.78rem; padding: 6px 14px; }
+  div[data-testid="stDecoration"] { display: none; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("⚡ AI Infrastructure Digital Twin")
 st.caption(
-    "Bayesian fusion of EIA commercial sector data · Four forecast models · "
-    "Institutional benchmark scoreboard  |  Data through Feb 2026"
+    "Probabilistic forecasting · Monte Carlo simulation · Forecast audit system  "
+    "|  Bayesian fusion of EIA + EPA data · 8 scenarios · 10k trajectories"
 )
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tabs = st.tabs([
     "📈 National Forecast",
     "🏆 Model Leaderboard",
     "📋 Institutional Benchmarks",
     "🗺️  State Breakdown",
+    "🔮 Futures Engine",
+    "🪦 Forecast Graveyard",
 ])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 1  —  National Forecast
 # ─────────────────────────────────────────────────────────────────────────────
-with tab1:
+with tabs[0]:
     hist     = load_co2_history()
     energy   = load_energy_history()
     fc_all   = load_model_forecasts("dc_co2_mt_monthly")
     proj2030 = load_2030_projections()
 
     last_ds = hist["ds"].max()
-
-    # ── KPI metrics ──────────────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-    # 2024 annual actual
-    yr2024 = hist[hist["ds"].dt.year == 2024]["mean"].sum()
-    yr2023 = hist[hist["ds"].dt.year == 2023]["mean"].sum()
-    # 2025 partial
-    yr2025 = hist[hist["ds"].dt.year == 2025]["mean"].sum()
+    yr2024  = hist[hist["ds"].dt.year == 2024]["mean"].sum()
+    yr2023  = hist[hist["ds"].dt.year == 2023]["mean"].sum()
+    yr2025  = hist[hist["ds"].dt.year == 2025]["mean"].sum()
 
     sarima_2030 = proj2030[proj2030["model"] == "sarima"]["co2_mt_2030"].values
-    sarima_2030_val = float(sarima_2030[0]) if len(sarima_2030) else float("nan")
+    sarima_val  = float(sarima_2030[0]) if len(sarima_2030) else float("nan")
+    en2024      = energy[energy["yr"] == 2024]["twh"].values
+    en2024_val  = float(en2024[0]) if len(en2024) else float("nan")
 
-    en2024 = energy[energy["yr"] == 2024]["twh"].values
-    en2024_val = float(en2024[0]) if len(en2024) else float("nan")
-
-    c1.metric("2024 Total Facility Energy", f"{en2024_val:.0f} TWh",
-              help="Sum of fusion_posterior dc_gwh (incl. cooling overhead)")
-    c2.metric("2024 CO₂ Emissions", f"{yr2024:.1f} Mt",
-              delta=f"{yr2024-yr2023:+.1f} vs 2023",
-              help="Sum of dc_co2_mt_monthly · national avg emission factor")
-    c3.metric("2025 CO₂ (partial)", f"{yr2025:.1f} Mt",
-              help="Jan–Dec 2025 from fusion_posterior")
-    c4.metric("SARIMA 2030 Projection", f"{sarima_2030_val:.0f} Mt/yr",
-              help="Best model (lowest holdout MAE)")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("2024 Total Facility Energy", f"{en2024_val:.0f} TWh")
+    c2.metric("2024 CO₂", f"{yr2024:.1f} Mt", delta=f"{yr2024-yr2023:+.1f} vs 2023")
+    c3.metric("2025 CO₂ (partial)", f"{yr2025:.1f} Mt")
+    c4.metric("SARIMA 2030 Projection", f"{sarima_val:.0f} Mt/yr")
 
     st.divider()
-
-    # ── CO2 forecast chart ────────────────────────────────────────────────────
     st.subheader("Monthly DC CO₂ Emissions + Model Forecasts (2001–2030)")
 
     holdout_start = last_ds - pd.DateOffset(months=12)
-
     fig1 = go.Figure()
 
-    # 95% CI band (history)
     fig1.add_trace(go.Scatter(
         x=pd.concat([hist["ds"], hist["ds"][::-1]]),
         y=pd.concat([hist["p97_5"], hist["p2_5"][::-1]]),
-        fill="toself",
-        fillcolor="rgba(45,106,79,0.12)",
-        line=dict(color="rgba(0,0,0,0)"),
-        name="Fusion 95% CI",
-        showlegend=True,
+        fill="toself", fillcolor="rgba(34,197,94,0.08)",
+        line=dict(color="rgba(0,0,0,0)"), name="Fusion 95% CI",
     ))
-
-    # Holdout window shading
     fig1.add_vrect(
         x0=holdout_start, x1=last_ds,
-        fillcolor="rgba(200,200,200,0.18)",
-        line_width=0,
-        annotation_text="Holdout",
-        annotation_position="top left",
+        fillcolor="rgba(255,255,255,0.04)", line_width=0,
+        annotation_text="Holdout", annotation_position="top left",
         annotation_font_size=11,
     )
-
-    # Historical mean
     fig1.add_trace(go.Scatter(
         x=hist["ds"], y=hist["mean"],
-        line=dict(color="#2d6a4f", width=2),
+        line=dict(color="#22c55e", width=2),
         name="Fusion posterior (actual)",
     ))
 
-    # Future model forecasts
     for model, color in MODEL_COLORS.items():
         fc_m = fc_all[(fc_all["model"] == model) & (fc_all["ds"] > last_ds)]
         if fc_m.empty:
@@ -126,89 +138,63 @@ with tab1:
         is_winner = (model == "sarima")
         fig1.add_trace(go.Scatter(
             x=fc_m["ds"], y=fc_m["yhat"],
-            line=dict(color=color,
-                      width=2.5 if is_winner else 1.5,
+            line=dict(color=color, width=2.5 if is_winner else 1.5,
                       dash="solid" if is_winner else "dash"),
             name=MODEL_LABELS[model],
         ))
         if is_winner:
-            # CI band for SARIMA
             fig1.add_trace(go.Scatter(
                 x=pd.concat([fc_m["ds"], fc_m["ds"][::-1]]),
                 y=pd.concat([fc_m["yhat_upper"], fc_m["yhat_lower"][::-1]]),
-                fill="toself",
-                fillcolor=f"rgba(0,180,216,0.10)",
-                line=dict(color="rgba(0,0,0,0)"),
-                name="SARIMA 95% CI",
-                showlegend=True,
+                fill="toself", fillcolor="rgba(0,180,216,0.10)",
+                line=dict(color="rgba(0,0,0,0)"), name="SARIMA 95% CI",
             ))
 
-    # IEA 2024 CO2 benchmark point
     fig1.add_trace(go.Scatter(
-        x=[pd.Timestamp("2024-07-01")],
-        y=[105.0 / 12],
+        x=[pd.Timestamp("2024-07-01")], y=[105.0 / 12],
         mode="markers+text",
-        marker=dict(symbol="diamond", size=12, color="#e63946"),
-        text=["IEA 2025<br>(105 Mt/yr)"],
-        textposition="top right",
+        marker=dict(symbol="diamond", size=12, color="#ef4444"),
+        text=["IEA 2025<br>(105 Mt/yr)"], textposition="top right",
         name="IEA benchmark (2024)",
     ))
 
     fig1.update_layout(
-        xaxis_title=None,
-        yaxis_title="DC CO₂ (Mt / month)",
-        hovermode="x unified",
-        height=440,
+        xaxis_title=None, yaxis_title="DC CO₂ (Mt / month)",
+        hovermode="x unified", height=440,
         legend=dict(orientation="h", yanchor="bottom", y=1.01),
         margin=dict(t=30, b=20),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
     st.plotly_chart(fig1, use_container_width=True)
 
-    # ── 2030 projections bar chart ────────────────────────────────────────────
     st.subheader("2030 Annual CO₂ Projections by Model")
     fig2 = go.Figure()
     for _, row in proj2030.iterrows():
         color = MODEL_COLORS.get(row["model"], "#888")
         fig2.add_trace(go.Bar(
-            x=[row["model_label"]],
-            y=[row["co2_mt_2030"]],
-            error_y=dict(
-                type="data",
-                symmetric=False,
-                array=[row["co2_upper"] - row["co2_mt_2030"]],
-                arrayminus=[row["co2_mt_2030"] - row["co2_lower"]],
-            ),
-            marker_color=color,
-            name=row["model_label"],
-            showlegend=False,
+            x=[row["model_label"]], y=[row["co2_mt_2030"]],
+            error_y=dict(type="data", symmetric=False,
+                         array=[row["co2_upper"] - row["co2_mt_2030"]],
+                         arrayminus=[row["co2_mt_2030"] - row["co2_lower"]]),
+            marker_color=color, showlegend=False,
         ))
-
-    # IEA 2024 reference line
-    fig2.add_hline(y=105, line_dash="dot", line_color="#e63946",
-                   annotation_text="IEA 2024 benchmark (105 Mt)",
-                   annotation_position="bottom right")
-
+    fig2.add_hline(y=105, line_dash="dot", line_color="#ef4444",
+                   annotation_text="IEA 2024 (105 Mt)", annotation_position="bottom right")
     fig2.update_layout(
-        yaxis_title="Annual CO₂ (Mt/yr)",
-        height=340,
-        margin=dict(t=20, b=20),
+        yaxis_title="Annual CO₂ (Mt/yr)", height=320, margin=dict(t=20, b=20),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-    # ── Annual energy history ─────────────────────────────────────────────────
-    with st.expander("Annual total facility energy history (dc_gwh, all workloads)"):
+    with st.expander("Annual total facility energy history"):
         fig3 = go.Figure(go.Scatter(
-            x=energy["yr"], y=energy["twh"],
-            mode="lines+markers",
-            line=dict(color="#2d6a4f", width=2),
-            marker=dict(size=5),
-            name="Total DC energy",
+            x=energy["yr"], y=energy["twh"], mode="lines+markers",
+            line=dict(color="#22c55e", width=2), marker=dict(size=5),
         ))
         fig3.update_layout(
-            xaxis_title="Year",
-            yaxis_title="Annual Energy (TWh)",
-            height=300,
+            xaxis_title="Year", yaxis_title="Annual Energy (TWh)", height=300,
             margin=dict(t=10, b=20),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         )
         st.plotly_chart(fig3, use_container_width=True)
 
@@ -216,64 +202,46 @@ with tab1:
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2  —  Model Leaderboard
 # ─────────────────────────────────────────────────────────────────────────────
-with tab2:
-    lb      = load_leaderboard()
-    cmp     = load_holdout_comparison()
-    proj    = load_2030_projections()
+with tabs[1]:
+    lb  = load_leaderboard()
+    cmp = load_holdout_comparison()
+    proj = load_2030_projections()
 
     st.subheader("12-Month Holdout Evaluation  —  dc_co2_mt_monthly")
-    st.caption(
-        "Holdout = last 12 months of fusion_posterior data. "
-        "MAE computed against posterior-mean actuals."
-    )
 
-    # Styled leaderboard table
     def _row_style(row):
         return ["background-color: rgba(0,180,216,0.15)"] * len(row) if row["Rank"] == 1 else [""] * len(row)
 
-    display_lb = lb[["Rank", "Model", "Holdout MAE (Mt/mo)", "N holdout"]].copy()
     st.dataframe(
-        display_lb.style.apply(_row_style, axis=1),
-        use_container_width=True,
-        hide_index=True,
+        lb[["Rank", "Model", "Holdout MAE (Mt/mo)", "N holdout"]].style.apply(_row_style, axis=1),
+        use_container_width=True, hide_index=True,
     )
-
     st.divider()
 
     col_left, col_right = st.columns(2)
-
     with col_left:
         st.subheader("Holdout MAE by Model")
         fig_mae = go.Figure()
         for _, row in lb.iterrows():
-            key = row["model_key"]
             fig_mae.add_trace(go.Bar(
-                x=[row["Model"]],
-                y=[row["Holdout MAE (Mt/mo)"]],
-                marker_color=MODEL_COLORS.get(key, "#888"),
-                showlegend=False,
+                x=[row["Model"]], y=[row["Holdout MAE (Mt/mo)"]],
+                marker_color=MODEL_COLORS.get(row["model_key"], "#888"), showlegend=False,
             ))
-        fig_mae.update_layout(
-            yaxis_title="MAE (Mt/month)",
-            height=300,
-            margin=dict(t=10, b=20),
-        )
+        fig_mae.update_layout(yaxis_title="MAE (Mt/month)", height=300,
+                               margin=dict(t=10, b=20),
+                               plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_mae, use_container_width=True)
 
     with col_right:
         st.subheader("Holdout: Actual vs Predicted")
-        model_sel = st.selectbox(
-            "Model",
-            options=list(MODEL_COLORS.keys()),
-            format_func=lambda m: MODEL_LABELS[m],
-        )
+        model_sel = st.selectbox("Model", options=list(MODEL_COLORS.keys()),
+                                 format_func=lambda m: MODEL_LABELS[m])
         fc_hold = cmp[cmp["model"] == model_sel].sort_values("ds")
         fig_hold = go.Figure()
         fig_hold.add_trace(go.Scatter(
             x=fc_hold["ds"], y=fc_hold["y_actual"],
-            mode="lines+markers",
-            line=dict(color="#2d6a4f", width=2),
-            name="Actual (fusion posterior)",
+            mode="lines+markers", line=dict(color="#22c55e", width=2),
+            name="Actual",
         ))
         fig_hold.add_trace(go.Scatter(
             x=fc_hold["ds"], y=fc_hold["yhat"],
@@ -282,66 +250,51 @@ with tab2:
             name="Predicted",
         ))
         fig_hold.update_layout(
-            yaxis_title="CO₂ (Mt/month)",
-            height=300,
-            margin=dict(t=10, b=20),
+            yaxis_title="CO₂ (Mt/month)", height=300, margin=dict(t=10, b=20),
             legend=dict(orientation="h", yanchor="bottom", y=1.01),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         )
         st.plotly_chart(fig_hold, use_container_width=True)
 
     st.divider()
-
-    # 2030 projections comparison
     st.subheader("2030 CO₂ Projections vs IEA 2025 Benchmark")
     proj_disp = proj[["model_label", "co2_mt_2030", "co2_lower", "co2_upper"]].copy()
     proj_disp.columns = ["Model", "2030 CO₂ (Mt/yr)", "Lower", "Upper"]
     proj_disp["vs IEA 105 Mt (%)"] = ((proj_disp["2030 CO₂ (Mt/yr)"] - 105) / 105 * 100).round(1)
     st.dataframe(proj_disp.round(1), use_container_width=True, hide_index=True)
 
-    with st.expander("ℹ️  Why does OLS underperform?"):
-        st.markdown("""
-**OLS works on annual aggregates**, then distributes CO₂ flat across months (annual/12).
-This flattens intra-year seasonality, inflating monthly MAE even when the annual total is reasonable.
-
-**SARIMA wins** because the fusion posterior `dc_co2_mt_monthly` has strong and consistent
-12-month seasonality that SARIMA captures directly, while Prophet adds flexibility but also noise.
-        """)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3  —  Institutional Benchmarks
 # ─────────────────────────────────────────────────────────────────────────────
-with tab3:
+with tabs[2]:
     scores = load_benchmark_scores()
-
     st.subheader("Institutional Forecast Scoreboard")
     st.caption(
-        "Published energy / CO₂ forecasts graded against fusion_posterior posterior-mean actuals.  "
+        "Published energy / CO₂ forecasts graded against fusion_posterior actuals.  "
         "Error% = (forecast_mid − actual) / actual × 100.  "
         "Grade: A < 5%, B < 15%, C < 30%, D < 50%, F ≥ 50%."
     )
 
     VAR_LABEL = {
-        "energy_twh":    "Energy TWh (total facility)",
+        "energy_twh": "Energy TWh (total facility)",
         "energy_twh_it": "Energy TWh (IT load only)",
-        "co2_mt":        "CO₂ Mt/yr",
+        "co2_mt": "CO₂ Mt/yr",
     }
 
     graded  = scores[scores["grade"] != "pending"].copy()
     pending = scores[scores["grade"] == "pending"].copy()
 
-    # Graded table
     if not graded.empty:
         graded["Variable"] = graded["variable"].map(VAR_LABEL).fillna(graded["variable"])
         graded["Forecast"] = graded.apply(
             lambda r: f"{r['forecast_lo']:.0f}–{r['forecast_mid']:.0f}–{r['forecast_hi']:.0f}"
             if pd.notna(r["forecast_lo"]) and r["forecast_lo"] != r["forecast_mid"]
-            else f"{r['forecast_mid']:.1f}",
-            axis=1,
+            else f"{r['forecast_mid']:.1f}", axis=1,
         )
         graded["Actual"] = graded["actual_value"].map(lambda v: f"{v:.1f}" if pd.notna(v) else "—")
         graded["Error%"] = graded["error_pct"].map(lambda v: f"{v:+.1f}%" if pd.notna(v) else "—")
-        graded["Bias"] = graded["bias"].fillna("—")
+        graded["Bias"]   = graded["bias"].fillna("—")
 
         def _grade_style(row):
             bg = GRADE_COLORS.get(row["Grade"], "#ffffff")
@@ -351,13 +304,9 @@ with tab3:
                         "Forecast", "Actual", "Error%", "grade", "Bias"]].copy()
         disp.columns = ["Source", "Report yr", "Target yr", "Variable",
                         "Forecast", "Actual", "Error%", "Grade", "Bias"]
-        st.dataframe(
-            disp.style.apply(_grade_style, axis=1),
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(disp.style.apply(_grade_style, axis=1),
+                     use_container_width=True, hide_index=True)
 
-    # Error bar chart
     st.subheader("Forecast Error by Institution")
     fig_err = go.Figure()
     for _, row in graded.iterrows():
@@ -366,141 +315,388 @@ with tab3:
         color = GRADE_COLORS.get(row["grade"], "#888")
         label = f"{row['source']} ({row['forecast_year']})"
         fig_err.add_trace(go.Bar(
-            x=[label],
-            y=[row["error_pct"]],
-            marker_color=color,
-            showlegend=False,
+            x=[label], y=[row["error_pct"]], marker_color=color, showlegend=False,
             hovertemplate=(
-                f"<b>{row['source']}</b><br>"
-                f"Target: {row['forecast_year']}<br>"
-                f"Variable: {row['variable']}<br>"
-                f"Error: {row['error_pct']:+.1f}%<br>"
-                f"Grade: {row['grade']}<extra></extra>"
+                f"<b>{row['source']}</b><br>Target: {row['forecast_year']}<br>"
+                f"Error: {row['error_pct']:+.1f}%<br>Grade: {row['grade']}<extra></extra>"
             ),
         ))
-    fig_err.add_hline(y=0, line_color="#333", line_width=1)
+    fig_err.add_hline(y=0, line_color="#475569", line_width=1)
     fig_err.update_layout(
-        yaxis_title="Error% (positive = forecast too high)",
-        height=320,
-        margin=dict(t=10, b=20),
+        yaxis_title="Error% (positive = too high)", height=320, margin=dict(t=10, b=20),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
     st.plotly_chart(fig_err, use_container_width=True)
 
-    # Pending table
     if not pending.empty:
         st.subheader("Pending — No Actuals Yet (2026–2030)")
         pending["Variable"] = pending["variable"].map(VAR_LABEL).fillna(pending["variable"])
-        pending["Range (TWh or Mt)"] = pending.apply(
+        pending["Range"] = pending.apply(
             lambda r: f"{r['forecast_lo']:.0f}–{r['forecast_mid']:.0f}–{r['forecast_hi']:.0f}"
-            if pd.notna(r["forecast_lo"]) else f"{r['forecast_mid']:.1f}",
-            axis=1,
+            if pd.notna(r["forecast_lo"]) else f"{r['forecast_mid']:.1f}", axis=1,
         )
         pend_disp = pending[["source", "report_year", "forecast_year",
-                              "Variable", "Range (TWh or Mt)", "notes"]].copy()
+                              "Variable", "Range", "notes"]].copy()
         pend_disp.columns = ["Source", "Report yr", "Target yr", "Variable", "Range", "Notes"]
         st.dataframe(pend_disp, use_container_width=True, hide_index=True)
 
     with st.expander("ℹ️  Methodology notes"):
         st.markdown("""
-**energy_twh (total facility)** — compared against `sum(dc_gwh)/1000` from fusion_posterior.
-Includes IT equipment + cooling + power distribution.
+**IEA gap (68 Mt vs 105 Mt):** IEA uses PUE=1.58 + US national avg emission factor ~490 g/kWh.
+Our model converges to PUE=1.34 under joint EIA+eGRID constraints. The gap is a documented scope difference, not an error.
 
-**energy_twh_it (IT load only)** — compared against `sum(dc_gwh)/1000 / PUE` where PUE = 1.34
-(fusion model posterior mean). IEA's 183 TWh (2024) is IT-load scope.
-
-**co2_mt** — compared against `sum(dc_co2_mt_monthly)` from fusion_posterior.
-Uses national-avg emission factor (366–390 g/kWh from eGRID 2020–2023).
-
-**Key finding**: Pre-2023 forecasts (LBNL, Masanet) severely underestimated demand growth
-because they assumed workload-efficiency improvements would offset compute expansion.
-The AI boom of 2023+ invalidated this assumption.
-
-**IEA 2025 tension**: Our model's CO₂ estimate (68 Mt) is 37 Mt below IEA's 105 Mt.
-Root cause: IEA uses national-avg emission factors × total facility scope (PUE ~1.58);
-our model's PUE converges to 1.34 under the joint energy + CO₂ constraints — a
-documented limitation explained in the fusion model methodology.
+**Pre-2023 forecast failure:** LBNL, Masanet assumed efficiency gains would offset demand growth.
+The 2023 AI boom invalidated this — demand grew faster than any model predicted.
         """)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 4  —  State Breakdown
 # ─────────────────────────────────────────────────────────────────────────────
-with tab4:
+with tabs[3]:
     states24 = load_state_2024()
     states30 = load_state_2030()
 
     st.subheader("State-Level DC Energy  —  2024 Actuals vs 2030 Forecasts")
-    st.caption(
-        "2024: fusion_posterior posterior mean (state_dc_gwh_XX × Dirichlet weights).  "
-        "2030: Prophet model forecast."
-    )
-
-    # Merge 2024 + 2030
-    merged = states24.merge(states30, on="state", how="outer").sort_values(
-        "twh_2024", ascending=False
-    )
+    merged = states24.merge(states30, on="state", how="outer").sort_values("twh_2024", ascending=False)
     merged["growth_pct"] = ((merged["twh_2030"] - merged["twh_2024"]) / merged["twh_2024"] * 100).round(1)
 
     col_a, col_b = st.columns([2, 1])
-
     with col_a:
-        st.subheader("2024 vs 2030 Energy by State (TWh)")
         fig_st = go.Figure()
-        fig_st.add_trace(go.Bar(
-            name="2024 actual",
-            x=merged["state"],
-            y=merged["twh_2024"],
-            marker_color="#2d6a4f",
-        ))
-        fig_st.add_trace(go.Bar(
-            name="2030 forecast (Prophet)",
-            x=merged["state"],
-            y=merged["twh_2030"],
-            marker_color=MODEL_COLORS["prophet"],
-        ))
-        fig_st.update_layout(
-            barmode="group",
-            yaxis_title="Annual Energy (TWh)",
-            height=360,
-            margin=dict(t=10, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.01),
-        )
+        fig_st.add_trace(go.Bar(name="2024 actual", x=merged["state"], y=merged["twh_2024"],
+                                marker_color="#22c55e"))
+        fig_st.add_trace(go.Bar(name="2030 (Prophet)", x=merged["state"], y=merged["twh_2030"],
+                                marker_color=MODEL_COLORS["prophet"]))
+        fig_st.update_layout(barmode="group", yaxis_title="Annual Energy (TWh)", height=360,
+                              margin=dict(t=10, b=20),
+                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                              legend=dict(orientation="h", yanchor="bottom", y=1.01))
         st.plotly_chart(fig_st, use_container_width=True)
 
     with col_b:
-        st.subheader("2024 State Share")
-        total24 = states24["twh_2024"].sum()
         fig_pie = go.Figure(go.Pie(
-            labels=states24["state"],
-            values=states24["twh_2024"].round(2),
-            hole=0.4,
-            textinfo="label+percent",
-            textfont_size=11,
+            labels=states24["state"], values=states24["twh_2024"].round(2),
+            hole=0.4, textinfo="label+percent", textfont_size=11,
         ))
-        fig_pie.update_layout(
-            height=360,
-            margin=dict(t=10, b=10, l=10, r=10),
-            showlegend=False,
-        )
+        fig_pie.update_layout(height=360, margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+                               paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # State table
-    st.subheader("State Summary Table")
     disp_st = merged.copy()
     disp_st["twh_2024"] = disp_st["twh_2024"].round(1)
     disp_st["twh_2030"] = disp_st["twh_2030"].round(1)
     disp_st.columns = ["State", "2024 Energy (TWh)", "2030 Forecast (TWh)", "Growth %"]
     st.dataframe(disp_st, use_container_width=True, hide_index=True)
 
-    with st.expander("ℹ️  State methodology"):
-        st.markdown("""
-**State weights** are fixed Dirichlet priors derived from CBRE / JLL datacenter
-market reports (2024):  VA 35%, TX 8.5%, CA 7%, GA 5.5%, OH 4%, IL 3.8%, etc.
 
-**2024 state energy** = national `dc_gwh` × state weight (applied monthly).
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 5  —  Futures Engine
+# ─────────────────────────────────────────────────────────────────────────────
+with tabs[4]:
+    summary = load_simulation_summary()
+    hist_co2 = load_co2_annual_history()
+    hist_energy = load_energy_annual_history()
 
-**2030 state forecasts** use Prophet trained independently on each state's
-`state_dc_gwh_XX` time series from fusion_posterior.
+    st.subheader("AI Infrastructure Futures Engine")
+    st.caption(
+        "10,000 Monte Carlo trajectories per scenario · 8 alternative futures · 2025–2040"
+    )
 
-The top 13 states account for ~76% of US datacenter capacity by this weighting.
-        """)
+    if summary is None:
+        st.warning(
+            "Simulation data not found. Run: `python src/simulation_engine/run.py`"
+        )
+    else:
+        # ── Scenario selector ─────────────────────────────────────────────
+        scenario_options = {s.name: s for s in SCENARIOS}
+        sc_cols = st.columns(4)
+        selected = st.radio(
+            "Scenario",
+            options=[s.name for s in SCENARIOS],
+            format_func=lambda n: SCENARIO_MAP[n].label,
+            horizontal=True,
+        )
+        sc = SCENARIO_MAP[selected]
+
+        st.markdown(
+            f"<p style='color:#94a3b8; font-size:0.85rem; margin-top:-8px'>{sc.description}</p>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Variable toggle ───────────────────────────────────────────────
+        var_choice = st.radio("Variable", ["CO₂ (Mt/yr)", "Energy (TWh/yr)"], horizontal=True)
+        sim_var  = "dc_co2_mt"   if "CO₂" in var_choice else "dc_twh"
+        hist_col = "co2_mt"      if "CO₂" in var_choice else "dc_twh"
+        y_label  = "Annual CO₂ (Mt/yr)" if "CO₂" in var_choice else "Annual Energy (TWh/yr)"
+        hist_df  = hist_co2      if "CO₂" in var_choice else hist_energy
+
+        sc_sum = summary[(summary["scenario"] == selected) & (summary["variable"] == sim_var)]
+
+        # ── Fan chart ─────────────────────────────────────────────────────
+        fig_fan = go.Figure()
+
+        # Historical actuals
+        fig_fan.add_trace(go.Scatter(
+            x=hist_df["year"], y=hist_df[hist_col],
+            line=dict(color="#22c55e", width=2.5),
+            name="Historical (fusion posterior)",
+        ))
+
+        # P5–P95 outer band
+        fig_fan.add_trace(go.Scatter(
+            x=pd.concat([sc_sum["year"], sc_sum["year"][::-1]]),
+            y=pd.concat([sc_sum["p95"], sc_sum["p5"][::-1]]),
+            fill="toself",
+            fillcolor=f"rgba({_hex_to_rgb(sc.color)},0.08)",
+            line=dict(color="rgba(0,0,0,0)"),
+            name="5th–95th pct",
+            showlegend=True,
+        ))
+
+        # P25–P75 inner band
+        fig_fan.add_trace(go.Scatter(
+            x=pd.concat([sc_sum["year"], sc_sum["year"][::-1]]),
+            y=pd.concat([sc_sum["p75"], sc_sum["p25"][::-1]]),
+            fill="toself",
+            fillcolor=f"rgba({_hex_to_rgb(sc.color)},0.20)",
+            line=dict(color="rgba(0,0,0,0)"),
+            name="25th–75th pct",
+            showlegend=True,
+        ))
+
+        # Median
+        fig_fan.add_trace(go.Scatter(
+            x=sc_sum["year"], y=sc_sum["p50"],
+            line=dict(color=sc.color, width=2.5),
+            name="Median",
+        ))
+
+        # IEA 2024 reference line (CO₂ only)
+        if "CO₂" in var_choice:
+            fig_fan.add_hline(y=105, line_dash="dot", line_color="#ef4444",
+                              annotation_text="IEA 2024 (105 Mt/yr)",
+                              annotation_position="bottom right")
+
+        fig_fan.add_vline(x=2024.5, line_dash="dash", line_color="#475569",
+                          annotation_text="Now", annotation_position="top right",
+                          annotation_font_size=11)
+
+        fig_fan.update_layout(
+            xaxis_title=None, yaxis_title=y_label,
+            hovermode="x unified", height=440,
+            legend=dict(orientation="h", yanchor="bottom", y=1.01),
+            margin=dict(t=30, b=20),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_fan, use_container_width=True)
+
+        # ── Scenario comparison ───────────────────────────────────────────
+        st.subheader("Scenario Comparison — 2030 & 2040 Median Outcomes")
+
+        rows_cmp = []
+        for sc_obj in SCENARIOS:
+            s2030 = summary[
+                (summary["scenario"] == sc_obj.name) &
+                (summary["variable"] == sim_var) &
+                (summary["year"] == 2030)
+            ]
+            s2040 = summary[
+                (summary["scenario"] == sc_obj.name) &
+                (summary["variable"] == sim_var) &
+                (summary["year"] == 2040)
+            ]
+            if s2030.empty or s2040.empty:
+                continue
+            rows_cmp.append({
+                "Scenario": sc_obj.label,
+                "2030 median": round(float(s2030["p50"].values[0]), 1),
+                "2030 p5–p95": f"{s2030['p5'].values[0]:.0f} – {s2030['p95'].values[0]:.0f}",
+                "2040 median": round(float(s2040["p50"].values[0]), 1),
+                "2040 p5–p95": f"{s2040['p5'].values[0]:.0f} – {s2040['p95'].values[0]:.0f}",
+                "_color": sc_obj.color,
+            })
+
+        cmp_df = pd.DataFrame(rows_cmp)
+        unit_label = "Mt CO₂/yr" if "CO₂" in var_choice else "TWh/yr"
+
+        fig_cmp = go.Figure()
+        for _, row in cmp_df.iterrows():
+            fig_cmp.add_trace(go.Bar(
+                name=row["Scenario"], x=[row["Scenario"]],
+                y=[row["2030 median"]], marker_color=row["_color"],
+                showlegend=False,
+            ))
+        fig_cmp.update_layout(
+            yaxis_title=f"2030 Median ({unit_label})", height=320,
+            margin=dict(t=10, b=20),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_cmp, use_container_width=True)
+
+        display_cmp = cmp_df[["Scenario", "2030 median", "2030 p5–p95", "2040 median", "2040 p5–p95"]].copy()
+        display_cmp.columns = [
+            "Scenario",
+            f"2030 median ({unit_label})", "2030 range",
+            f"2040 median ({unit_label})", "2040 range",
+        ]
+        st.dataframe(display_cmp, use_container_width=True, hide_index=True)
+
+        # ── Agent signals ─────────────────────────────────────────────────
+        st.subheader("Agent Signals")
+        col_gpu, col_emi = st.columns(2)
+
+        with col_gpu:
+            gpu_df = load_gpu_demand_agent()
+            if not gpu_df.empty:
+                fig_gpu = go.Figure()
+                fig_gpu.add_trace(go.Scatter(
+                    x=gpu_df["year"], y=gpu_df["lo"],
+                    line=dict(color="rgba(0,0,0,0)"), showlegend=False,
+                ))
+                fig_gpu.add_trace(go.Scatter(
+                    x=gpu_df["year"], y=gpu_df["hi"],
+                    fill="tonexty", fillcolor="rgba(0,180,216,0.15)",
+                    line=dict(color="rgba(0,0,0,0)"), name="GPU Agent CI",
+                ))
+                fig_gpu.add_trace(go.Scatter(
+                    x=gpu_df["year"], y=gpu_df["baseline"],
+                    line=dict(color="#00b4d8", width=2), name="GPU Demand Agent",
+                ))
+                fig_gpu.update_layout(
+                    title="GPU Demand Agent — AI Energy (TWh/yr)",
+                    height=300, margin=dict(t=40, b=20),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    xaxis_title=None, yaxis_title="TWh/yr",
+                )
+                st.plotly_chart(fig_gpu, use_container_width=True)
+
+        with col_emi:
+            emi_df = load_emissions_agent()
+            if not emi_df.empty:
+                fig_emi = go.Figure()
+                fig_emi.add_trace(go.Scatter(
+                    x=emi_df["year"], y=emi_df["lo"],
+                    line=dict(color="rgba(0,0,0,0)"), showlegend=False,
+                ))
+                fig_emi.add_trace(go.Scatter(
+                    x=emi_df["year"], y=emi_df["hi"],
+                    fill="tonexty", fillcolor="rgba(34,197,94,0.12)",
+                    line=dict(color="rgba(0,0,0,0)"), name="Emissions Agent CI",
+                ))
+                fig_emi.add_trace(go.Scatter(
+                    x=emi_df["year"], y=emi_df["baseline"],
+                    line=dict(color="#22c55e", width=2), name="Emissions Agent",
+                ))
+                fig_emi.update_layout(
+                    title="Emissions Agent — DC CO₂ (Mt/yr)",
+                    height=300, margin=dict(t=40, b=20),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    xaxis_title=None, yaxis_title="Mt CO₂/yr",
+                )
+                st.plotly_chart(fig_emi, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6  —  Forecast Graveyard
+# ─────────────────────────────────────────────────────────────────────────────
+with tabs[5]:
+    st.subheader("Forecast Graveyard")
+    st.caption(
+        "Permanent record of institutional forecasts graded against fusion_posterior actuals.  "
+        "Every assumption. Every failure. Every revision."
+    )
+
+    cred_df   = load_org_credibility()
+    decay_df  = load_decay_curve()
+    memory_df = load_forecast_memory()
+    autopsy_df = load_assumption_autopsy()
+
+    if memory_df.empty:
+        st.info("Forecast memory not seeded. Run: `python src/simulation_engine/run.py`")
+    else:
+        # ── Org credibility ───────────────────────────────────────────────
+        st.subheader("Organization Credibility Scores")
+        if not cred_df.empty:
+            fig_cred = go.Figure()
+            colors = ["#22c55e" if s > 0.7 else "#f59e0b" if s > 0.4 else "#ef4444"
+                      for s in cred_df["confidence_score"]]
+            fig_cred.add_trace(go.Bar(
+                x=cred_df["source"], y=cred_df["confidence_score"],
+                marker_color=colors, showlegend=False,
+                hovertemplate="<b>%{x}</b><br>Score: %{y:.3f}<extra></extra>",
+            ))
+            fig_cred.add_hline(y=0.7, line_dash="dot", line_color="#22c55e",
+                               annotation_text="Good (0.7)", annotation_position="right")
+            fig_cred.add_hline(y=0.4, line_dash="dot", line_color="#f59e0b",
+                               annotation_text="Poor (0.4)", annotation_position="right")
+            fig_cred.update_layout(
+                yaxis_title="Credibility Score (1 = perfect)", height=320,
+                yaxis=dict(range=[0, 1.05]),
+                margin=dict(t=10, b=20),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_cred, use_container_width=True)
+
+            cred_disp = cred_df[["source", "confidence_score", "mean_abs_error",
+                                  "bias", "worst_error", "bias_direction", "n_forecasts"]].copy()
+            cred_disp.columns = ["Organization", "Credibility", "Mean |Error%|",
+                                  "Bias%", "Worst Error%", "Bias Direction", "N Forecasts"]
+            st.dataframe(cred_disp.round(2), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Decay curve ───────────────────────────────────────────────────
+        st.subheader("Forecast Error vs Horizon")
+        st.caption("How forecast accuracy degrades as the forecast horizon (years to target) increases.")
+        if not decay_df.empty:
+            fig_decay = go.Figure()
+            orgs = decay_df["source"].unique()
+            palette = ["#00b4d8", "#f97316", "#22c55e", "#a855f7",
+                       "#ef4444", "#f59e0b", "#8b5cf6", "#ec4899"]
+            for i, org in enumerate(orgs):
+                sub = decay_df[decay_df["source"] == org].sort_values("horizon_years")
+                color = palette[i % len(palette)]
+                fig_decay.add_trace(go.Scatter(
+                    x=sub["horizon_years"], y=sub["abs_error"],
+                    mode="markers+lines", name=org,
+                    line=dict(color=color, width=1.5),
+                    marker=dict(size=8, color=color),
+                    hovertemplate=(
+                        f"<b>{org}</b><br>Horizon: %{{x}}yr<br>"
+                        "|Error|: %{y:.1f}%<extra></extra>"
+                    ),
+                ))
+            fig_decay.update_layout(
+                xaxis_title="Forecast Horizon (years to target)",
+                yaxis_title="|Error%|",
+                height=360, margin=dict(t=10, b=20),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.01),
+            )
+            st.plotly_chart(fig_decay, use_container_width=True)
+
+        st.divider()
+
+        # ── Full forecast record ──────────────────────────────────────────
+        st.subheader("Full Forecast Record")
+        graded_mem = memory_df[memory_df["actual_value"].notna()].copy()
+        if not graded_mem.empty:
+            graded_mem["error_pct"] = graded_mem["error_pct"].round(1)
+            graded_mem["confidence_score"] = graded_mem["confidence_score"].round(3)
+            disp_mem = graded_mem[[
+                "source", "published_date", "target_year", "variable",
+                "forecast_mid", "actual_value", "error_pct", "confidence_score", "notes"
+            ]].copy()
+            disp_mem.columns = [
+                "Source", "Published", "Target yr", "Variable",
+                "Forecast", "Actual", "Error%", "Confidence", "Notes"
+            ]
+            st.dataframe(disp_mem, use_container_width=True, hide_index=True)
+
+        # ── Assumption autopsy ────────────────────────────────────────────
+        if not autopsy_df.empty:
+            st.divider()
+            st.subheader("Assumption Autopsy")
+            st.caption("Which assumption categories appeared most often in failed forecasts (|error| > 30%)?")
+            st.dataframe(autopsy_df, use_container_width=True, hide_index=True)
