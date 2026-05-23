@@ -62,6 +62,15 @@ def run_scenario_full(
         log.info("Cache hit: %s  hash=%s", params.name, h)
         summary = cache_mod.read_cached_summary(h)
         r2030 = metrics_mod.risk_table(summary, year=2030)
+
+        # Backfill sensitivity if not yet computed for this run
+        sens_path = output_dir / "sensitivity_metrics.parquet"
+        if not sens_path.exists():
+            log.info("Backfilling sensitivity for cached run %s", h)
+            _traj = cache_mod.read_cached_trajectories(h)
+            sens = metrics_mod.compute_sensitivity(_traj)
+            sens.to_parquet(sens_path, index=False, compression="snappy")
+
         return {
             "run_id":           h,
             "cache_hash":       h,
@@ -103,6 +112,8 @@ def run_scenario_full(
         # ── Metrics ───────────────────────────────────────────────────────────
         log.info("Computing percentiles and tail risk...")
         summary = metrics_mod.compute_percentiles(trajectories)
+        log.info("Computing sensitivity...")
+        sensitivity = metrics_mod.compute_sensitivity(trajectories)
 
         runtime = time.perf_counter() - t0
 
@@ -123,6 +134,10 @@ def run_scenario_full(
             param_draws=param_draws,
             summary=summary,
         )
+
+        # ── Sensitivity ───────────────────────────────────────────────────────
+        sensitivity.to_parquet(output_dir / "sensitivity_metrics.parquet",
+                               index=False, compression="snappy")
 
         # ── Scenario report ───────────────────────────────────────────────────
         report_path = report_generator.generate(

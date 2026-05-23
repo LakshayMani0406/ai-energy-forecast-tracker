@@ -21,6 +21,13 @@ IEA_2024_CO2_MT = 105.0       # IEA benchmark (2024)
 ANCHOR_CO2_2024 = 67.7        # fusion_posterior actual
 ANCHOR_TWH_2024 = 187.6
 
+_SENSITIVITY_PARAMS = {
+    "compute_index":    "Compute growth index",
+    "efficiency_index": "Hardware efficiency index",
+    "pue":              "Power usage effectiveness (PUE)",
+    "carbon_intensity": "Grid carbon intensity (g/kWh)",
+}
+
 
 def compute_percentiles(trajectories: pd.DataFrame) -> pd.DataFrame:
     """
@@ -135,3 +142,43 @@ def risk_table(summary: pd.DataFrame, year: int = 2030) -> dict:
         "energy_p50_twh":        round(float(twh["p50"]), 1) if twh is not None else None,
         "energy_p95_twh":        round(float(twh["p95"]), 1) if twh is not None else None,
     }
+
+
+def compute_sensitivity(
+    trajectories: pd.DataFrame,
+    target_years: list[int] | None = None,
+    target_var: str = "dc_co2_mt",
+) -> pd.DataFrame:
+    """
+    Spearman rank correlation of each driver against target_var at each target year.
+
+    Uses pandas .corr(method='spearman') — no scipy dependency.
+    With 10k samples all non-trivial correlations are highly significant (p < 0.001).
+
+    Returns columns:
+      scenario, year, parameter, display_name, spearman_r, r_squared_pct
+    """
+    if target_years is None:
+        target_years = [2030, 2040]
+
+    params = list(_SENSITIVITY_PARAMS.keys())
+    scenario = trajectories["scenario"].iloc[0] if "scenario" in trajectories.columns else ""
+    rows: list[dict] = []
+
+    for year in target_years:
+        yr = trajectories[trajectories["year"] == year][params + [target_var]]
+        if yr.empty:
+            continue
+        corr = yr.corr(method="spearman")[target_var]
+        for p in params:
+            r = float(corr[p])
+            rows.append({
+                "scenario":      scenario,
+                "year":          int(year),
+                "parameter":     p,
+                "display_name":  _SENSITIVITY_PARAMS[p],
+                "spearman_r":    round(r, 4),
+                "r_squared_pct": round(r ** 2 * 100, 1),
+            })
+
+    return pd.DataFrame(rows)

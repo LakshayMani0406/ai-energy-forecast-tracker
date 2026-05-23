@@ -29,7 +29,7 @@ from data import (
     load_benchmark_scores,
     load_state_2024, load_state_2030,
     load_simulation_summary,
-    load_run_manifest, load_scenario_report,
+    load_run_manifest, load_scenario_report, load_sensitivity,
     load_co2_annual_history, load_energy_annual_history,
     load_forecast_memory, load_org_credibility,
     load_decay_curve, load_assumption_autopsy,
@@ -508,6 +508,46 @@ with tabs[4]:
                 _p_2x  = r.get("prob_exceed_2x_anchor", float("nan"))
                 _rc[2].metric("P(> IEA 105 Mt)", f"{_p_iea:.1%}" if _p_iea == _p_iea else "—")
                 _rc[3].metric("P(> 2× 2024)", f"{_p_2x:.1%}" if _p_2x == _p_2x else "—")
+
+        # ── Sensitivity tornado ───────────────────────────────────────────
+        if "CO₂" in var_choice:
+            sens_df = load_sensitivity()
+            if sens_df is not None:
+                col_s1, col_s2 = st.columns(2)
+                for col_s, yr in zip([col_s1, col_s2], [2030, 2040]):
+                    sc_sens = (
+                        sens_df[(sens_df["scenario"] == selected) & (sens_df["year"] == yr)]
+                        .sort_values("r_squared_pct")
+                    )
+                    if sc_sens.empty:
+                        continue
+                    bar_colors = [
+                        f"rgba({_hex_to_rgb(sc.color)},{0.4 + 0.6 * (r / sc_sens['r_squared_pct'].max())})"
+                        for r in sc_sens["r_squared_pct"]
+                    ]
+                    fig_s = go.Figure(go.Bar(
+                        x=sc_sens["r_squared_pct"],
+                        y=sc_sens["display_name"],
+                        orientation="h",
+                        marker_color=bar_colors,
+                        text=[f"ρ={r:+.2f}  R²={r2:.0f}%"
+                              for r, r2 in zip(sc_sens["spearman_r"], sc_sens["r_squared_pct"])],
+                        textposition="outside",
+                        cliponaxis=False,
+                    ))
+                    fig_s.update_layout(
+                        title=f"Parameter Sensitivity — {yr}",
+                        xaxis=dict(title="% CO₂ variance explained", range=[0, 110]),
+                        yaxis=dict(tickfont=dict(size=11)),
+                        height=240, margin=dict(t=40, b=10, l=10, r=80),
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    )
+                    col_s.plotly_chart(fig_s, use_container_width=True)
+                st.caption(
+                    "Spearman rank correlation R² — fraction of CO₂ variance explained by each driver "
+                    "independently across 10,000 trajectories. "
+                    "Efficiency multiplier: higher cumulative value = less improvement accumulated = more CO₂."
+                )
 
         # ── Scenario comparison ───────────────────────────────────────────
         st.subheader("Scenario Comparison — 2030 & 2040 Median Outcomes")

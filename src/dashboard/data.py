@@ -224,6 +224,33 @@ def load_scenario_report(scenario: str) -> str | None:
     return None
 
 
+_SENS_PATH = ROOT / "data" / "simulations" / "sensitivity.parquet"
+
+
+@st.cache_data(ttl=600)
+def load_sensitivity() -> pd.DataFrame | None:
+    """
+    Spearman sensitivity of driver parameters vs CO₂ at 2030 and 2040.
+    Reads from per-run cache dirs first; falls back to committed sensitivity.parquet.
+
+    Columns: scenario, year, parameter, display_name, spearman_r, r_squared_pct
+    """
+    import json
+
+    if _CACHE_DIR.exists():
+        frames = []
+        for run_dir in sorted(_CACHE_DIR.iterdir()):
+            sens_p = run_dir / "sensitivity_metrics.parquet"
+            if sens_p.exists():
+                frames.append(pd.read_parquet(sens_p))
+        if frames:
+            return pd.concat(frames, ignore_index=True)
+
+    if _SENS_PATH.exists():
+        return pd.read_parquet(_SENS_PATH)
+    return None
+
+
 @st.cache_data(ttl=300)
 def load_co2_annual_history() -> pd.DataFrame:
     """Annual CO₂ totals for fan-chart historical segment."""
